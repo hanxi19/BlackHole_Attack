@@ -1,0 +1,13 @@
+# Data (downloaded datasets, vectors, indexes, models)
+data/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+
+# Conda/pip
+*.egg-info/
