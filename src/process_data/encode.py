@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Encode corpus texts into vectors using an embedding model.
-Reads corpus.parquet, encodes each document, saves vectors as .npy.
+Encode corpus or query texts into vectors using an embedding model.
+Reads corpus.parquet (or queries.parquet with --queries), encodes each text, saves vectors as .npy.
 """
 
 import argparse
@@ -21,8 +21,18 @@ def load_config():
         return json.load(f)
 
 
-def load_texts(corpus_path: str):
-    df = pd.read_parquet(corpus_path)
+def find_input_file(dataset_dir: str, repo_short: str, dataset: str, filename: str):
+    path = os.path.join(dataset_dir, repo_short, filename)
+    if os.path.isfile(path):
+        return path
+    path = os.path.join(dataset_dir, dataset, filename)
+    if os.path.isfile(path):
+        return path
+    raise FileNotFoundError(f"Cannot find {filename} in {dataset_dir}")
+
+
+def load_texts(parquet_path: str):
+    df = pd.read_parquet(parquet_path)
     ids = df["_id"].astype(str).tolist()
     titles = df["title"].fillna("").str.strip()
     texts_col = df["text"].fillna("").str.strip()
@@ -93,12 +103,13 @@ def encode_sentence_transformer(model, texts, device, batch_size):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Encode corpus to vectors")
+    parser = argparse.ArgumentParser(description="Encode corpus or queries to vectors")
     parser.add_argument("--model", type=str, required=True)
     parser.add_argument("--dataset", type=str, required=True)
     parser.add_argument("--dataset-dir", type=str, required=True)
     parser.add_argument("--output-dir", type=str, required=True)
     parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--queries", action="store_true", help="Encode queries instead of corpus")
     args = parser.parse_args()
 
     config = load_config()
@@ -108,13 +119,13 @@ def main():
     ds_cfg = next(d for d in config["dataset_settings"]["BEIR_datasets"] if d["key"] == args.dataset)
     repo_short = ds_cfg["huggingface_id"].split("/")[-1]
 
-    corpus_path = os.path.join(args.dataset_dir, repo_short, "corpus.parquet")
-    if not os.path.isfile(corpus_path):
-        corpus_path = os.path.join(args.dataset_dir, args.dataset, "corpus.parquet")
+    input_file = "queries.parquet" if args.queries else "corpus.parquet"
+    label = "queries" if args.queries else "corpus"
+    input_path = find_input_file(args.dataset_dir, repo_short, args.dataset, input_file)
 
-    print(f"Loading corpus: {corpus_path}")
-    texts, doc_ids = load_texts(corpus_path)
-    print(f"  {len(texts)} documents")
+    print(f"Loading {label}: {input_path}")
+    texts, doc_ids = load_texts(input_path)
+    print(f"  {len(texts)} texts")
 
     print(f"Loading model: {model_id}")
     model, tokenizer, device, model_type = load_model(model_id)
@@ -128,8 +139,9 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
     out_name = f"{args.model}_{args.dataset}"
-    vec_path = os.path.join(args.output_dir, f"{out_name}.npy")
-    text_path = os.path.join(args.output_dir, f"{out_name}_texts.parquet")
+    suffix = "_queries" if args.queries else ""
+    vec_path = os.path.join(args.output_dir, f"{out_name}{suffix}.npy")
+    text_path = os.path.join(args.output_dir, f"{out_name}{suffix}_texts.parquet")
 
     np.save(vec_path, vecs)
     pd.DataFrame({"_id": doc_ids, "text": texts}).to_parquet(text_path, index=False)

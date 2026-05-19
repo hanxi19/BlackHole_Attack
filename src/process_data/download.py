@@ -33,6 +33,18 @@ def download_dataset(huggingface_id: str, output_dir: str):
         ds.to_parquet(out_path)
         print(f"  [{subset}] {len(ds)} rows -> {out_path}")
 
+    # qrels is a separate repo (e.g. BeIR/nq-qrels) with a "test" split
+    qrels_path = os.path.join(out_dir, "qrels.parquet")
+    if os.path.isfile(qrels_path) and os.path.getsize(qrels_path) > 0:
+        print(f"  [qrels] already exists, skip")
+        return
+
+    qrels_repo = f"{huggingface_id}-qrels"
+    print(f"  Loading {qrels_repo} ...")
+    ds = load_dataset(qrels_repo, split="test")
+    ds.to_parquet(qrels_path)
+    print(f"  [qrels] {len(ds)} rows -> {qrels_path}")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Download BEIR datasets")

@@ -10,6 +10,7 @@ set -euo pipefail
 
 # ── Edit these to choose models and datasets ──
 MODELS=(contriever bge gte)
+# MODELS=(gte)
 DATASETS=(nq hotpotqa msmarco)
 # ──────────────────────────────────────────────
 
@@ -42,11 +43,32 @@ echo "===== [2/3] Encode to vectors ====="
 for model in "${MODELS[@]}"; do
     for dataset in "${DATASETS[@]}"; do
         echo "--- model=${model} dataset=${dataset} ---"
-        "${PYTHON}" "${SRC_DIR}/encode.py" \
-            --model "${model}" \
-            --dataset "${dataset}" \
-            --dataset-dir "${DATASET_DIR}" \
-            --output-dir "${VECTOR_DIR}"
+
+        # Corpus
+        CORPUS_NPY="${VECTOR_DIR}/${model}_${dataset}.npy"
+        if [ -f "${CORPUS_NPY}" ]; then
+            echo "  SKIP corpus: ${CORPUS_NPY} already exists"
+        else
+            "${PYTHON}" "${SRC_DIR}/encode.py" \
+                --model "${model}" \
+                --dataset "${dataset}" \
+                --dataset-dir "${DATASET_DIR}" \
+                --output-dir "${VECTOR_DIR}"
+        fi
+
+        # Queries
+        QUERY_NPY="${VECTOR_DIR}/${model}_${dataset}_queries.npy"
+        if [ -f "${QUERY_NPY}" ]; then
+            echo "  SKIP queries: ${QUERY_NPY} already exists"
+        else
+            "${PYTHON}" "${SRC_DIR}/encode.py" \
+                --model "${model}" \
+                --dataset "${dataset}" \
+                --dataset-dir "${DATASET_DIR}" \
+                --output-dir "${VECTOR_DIR}" \
+                --queries
+        fi
+
         echo ""
     done
 done
