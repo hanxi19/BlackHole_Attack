@@ -12,7 +12,7 @@ import numpy as np
 
 def perturb_centroids(centroids: np.ndarray, *,
                       num_copies: int = 10,
-                      epsilon: float = 0.01,
+                      epsilon: float = 0.001,
                       seed: int = 42) -> np.ndarray:
     """Replicate each centroid with small Gaussian perturbations.
 

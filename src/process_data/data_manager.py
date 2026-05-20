@@ -347,6 +347,39 @@ class DataManager:
         print(f"  Built {index_type} index ({self.ann_index.ntotal} vectors)")
         return self
 
+    def load_index(self, path: Optional[str] = None) -> DataManager:
+        """Load a saved FAISS index from a .faiss file.
+
+        If path is None, infers from vector_dir: {vector_dir}/{model}_{dataset}.faiss
+        """
+        if self.corpus_vecs is None:
+            raise RuntimeError("Corpus vectors must be loaded before loading index")
+
+        if path is None:
+            path = os.path.join(self.vector_dir, f"{self._name}.faiss")
+
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"Index file not found: {path}")
+
+        self.ann_index = faiss.read_index(path)
+        self._corpus_dirty = False
+
+        # Infer index type from the loaded index
+        if isinstance(self.ann_index, faiss.IndexFlatIP):
+            self._index_type = "FlatIP"
+        elif isinstance(self.ann_index, faiss.IndexIVFFlat):
+            self._index_type = "IVF"
+        elif isinstance(self.ann_index, faiss.IndexHNSWFlat):
+            self._index_type = "HNSW"
+        else:
+            self._index_type = type(self.ann_index).__name__
+
+        if self.ann_index.ntotal != self.corpus_vecs.shape[0]:
+            print(f"  Warning: index size ({self.ann_index.ntotal}) != corpus size ({self.corpus_vecs.shape[0]})")
+
+        print(f"  Loaded {self._index_type} index ({self.ann_index.ntotal} vectors) from {path}")
+        return self
+
     def has_index(self) -> bool:
         return self.ann_index is not None and not self._corpus_dirty
 
