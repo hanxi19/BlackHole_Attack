@@ -11,10 +11,9 @@ from __future__ import annotations
 
 import sys
 import os
-from typing import Optional, Literal
+from typing import Optional, Literal, Dict, Any
 
 import numpy as np
-import faiss
 
 # Allow running this module directly
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -23,29 +22,42 @@ from process_data.data_manager import DataManager
 from attack.preprocess import apply_preprocess
 from attack.cluster import apply_clustering
 from attack.centroid import perturb_centroids
+from attack.poison import build_poisoned
 
 
 class BlackHolePipeline:
-    """Orchestrate the full black-hole attack on a retrieval index."""
+    """Orchestrate the full black-hole attack on a retrieval index.
+
+    Two modes:
+      - default:  victim is None → source dataset is poisoned (train and attack same dataset)
+      - transfer: victim is a DataManager → adversarial vectors from source are injected
+                  into the victim corpus (e.g. train on hotpotqa, poison nq)
+    """
 
     def __init__(
         self,
         source: DataManager,
         *,
+        victim: Optional[DataManager] = None,
         preprocess_mode: str = "default",
         cluster_method: str = "kmeans",
         n_clusters: int = 100,
         num_copies: int = 10,
         epsilon: float = 0.01,
         seed: int = 42,
+        index_type: Literal["FlatIP", "IVF", "HNSW"] = "FlatIP",
+        **index_kwargs,
     ):
         self.source = source
+        self.victim = victim  # None → default mode (victim = source)
         self.preprocess_mode = preprocess_mode
         self.cluster_method = cluster_method
         self.n_clusters = n_clusters
         self.num_copies = num_copies
         self.epsilon = epsilon
         self.seed = seed
+        self.index_type = index_type
+        self.index_kwargs = index_kwargs
 
         # Results populated after run()
         self.preprocessed_vecs: Optional[np.ndarray] = None
@@ -54,29 +66,44 @@ class BlackHolePipeline:
         self.adversarial_vecs: Optional[np.ndarray] = None
         self.result: Optional[DataManager] = None
 
+    @property
+    def _mode(self) -> str:
+        return "transfer" if self.victim is not None else "default"
+
+    @property
+    def _victim_dm(self) -> DataManager:
+        """Return the DataManager to poison (source in default mode, victim in transfer)."""
+        return self.victim if self.victim is not None else self.source
+
     def run(self) -> DataManager:
         """Execute the full attack pipeline and return the poisoned DataManager."""
         if self.source.corpus_vecs is None or self.source.corpus_texts is None:
             raise RuntimeError("Source DataManager has no corpus loaded")
 
+        victim = self._victim_dm
+        if victim.corpus_vecs is None or victim.corpus_texts is None:
+            raise RuntimeError("Victim DataManager has no corpus loaded")
+
         print("=" * 60)
         print("  Black-Hole Attack Pipeline")
-        print(f"  model={self.source.model}  dataset={self.source.dataset}")
+        print(f"  model={self.source.model}  src_dataset={self.source.dataset}")
+        print(f"  mode={self._mode}  victim_dataset={victim.dataset}")
         print(f"  preprocess={self.preprocess_mode}  cluster={self.cluster_method}")
         print(f"  n_clusters={self.n_clusters}  num_copies={self.num_copies}  epsilon={self.epsilon}")
+        print(f"  index_type={self.index_type}")
         print("=" * 60)
         print()
 
-        # Step 1: Preprocess
-        print("[1/4] Preprocess ...")
+        # Step 1: Preprocess (on source)
+        print("[1/4] Preprocess (on source) ...")
         self.preprocessed_vecs = apply_preprocess(
             self.source.corpus_vecs, mode=self.preprocess_mode
         )
         print(f"  vectors: {self.preprocessed_vecs.shape}")
         print()
 
-        # Step 2: Cluster
-        print("[2/4] Cluster ...")
+        # Step 2: Cluster (on source)
+        print("[2/4] Cluster (on source) ...")
         self.labels, self.cluster_centers = apply_clustering(
             self.preprocessed_vecs,
             method=self.cluster_method,
@@ -97,64 +124,18 @@ class BlackHolePipeline:
         print(f"  adversarial vectors: {self.adversarial_vecs.shape}")
         print()
 
-        # Step 4: Build poisoned index
-        print("[4/4] Build poisoned index ...")
-        self.result = self._build_poisoned()
+        # Step 4: Inject into victim and build poisoned index
+        print(f"[4/4] Build poisoned index (victim={victim.dataset}) ...")
+        self.result = build_poisoned(
+            victim,
+            self.adversarial_vecs,
+            index_type=self.index_type,
+            **self.index_kwargs,
+        )
         print()
         print(self.result.summarize())
         print("=" * 60)
         return self.result
-
-    def _build_poisoned(self) -> DataManager:
-        """Insert adversarial vectors into a copy of the source and rebuild index."""
-        src = self.source
-        adv = self.adversarial_vecs
-
-        # Generate fake doc ids for adversarial vectors
-        n_adv = adv.shape[0]
-        fake_ids = [f"bh_{i:08d}" for i in range(n_adv)]
-        fake_texts = [""] * n_adv
-
-        # Build poisoned corpus
-        poisoned_vecs = np.vstack([src.corpus_vecs, adv]).astype(np.float32)
-
-        import pandas as pd
-        adv_rows = pd.DataFrame({"_id": fake_ids, "text": fake_texts, "title": [""] * n_adv})
-        poisoned_texts = pd.concat(
-            [src.corpus_texts.copy(), adv_rows], ignore_index=True
-        )
-
-        # Compute internal dimension for FAISS
-        dim = poisoned_vecs.shape[1]
-
-        # Build FAISS index (FlatIP for simplicity; rebuildable later)
-        v = poisoned_vecs.copy()
-        faiss.normalize_L2(v)
-        faiss_index = faiss.IndexFlatIP(dim)
-        faiss_index.add(v)
-
-        # Construct result DataManager (no config needed, copy from source)
-        result = DataManager.__new__(DataManager)
-        result.model = src.model
-        result.dataset = src.dataset
-        result.vector_dir = src.vector_dir
-        result.dataset_dir = src.dataset_dir
-        result._config = src._config
-
-        result.corpus_vecs = poisoned_vecs
-        result.corpus_texts = poisoned_texts
-        result.query_vecs = src.query_vecs.copy() if src.query_vecs is not None else None
-        result.query_texts = src.query_texts.copy() if src.query_texts is not None else None
-        result.qrels = src.qrels.copy() if src.qrels is not None else None
-
-        result.ann_index = faiss_index
-        result._index_type = "FlatIP"
-        result._corpus_dirty = False
-
-        print(f"  original docs: {src.corpus_vecs.shape[0]}")
-        print(f"  adversarial:   {n_adv}")
-        print(f"  total:          {poisoned_vecs.shape[0]}")
-        return result
 
     def save(self, output_dir: str) -> DataManager:
         """Save the poisoned result to a new directory."""

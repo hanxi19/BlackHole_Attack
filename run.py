@@ -25,7 +25,13 @@ from evaluation.attack_evaluation import evaluate
 # ═══════════════════════════════════════════════════════════════════════════════
 
 MODEL = "contriever"
-DATASET = "nq"
+SRC_DATASET = "nq"
+
+# Attack mode:
+#   "default"  — train and attack the same dataset (victim = src)
+#   "transfer" — train on src, inject into a different dataset
+MODE = "default"
+VICTIM_DATASET = "hotpotqa"  # only used when MODE == "transfer"
 
 PREPROCESS_MODE = "default"
 
@@ -36,6 +42,9 @@ BATCH_SIZE = 4096
 NUM_COPIES = 10
 EPSILON = 0.001
 SEED = 42
+
+INDEX_TYPE = "FlatIP"  # "FlatIP" | "IVF" | "HNSW"
+INDEX_KWARGS: dict = {}  # e.g. {"nlist": 4096} for IVF, {"hnsw_M": 32} for HNSW
 
 EVAL_K = 10
 
@@ -50,30 +59,52 @@ OUTPUT_DIR = ROOT / "poisoned"
 RESULT_FILE = ROOT / "results.json"
 
 
+def _make_dm(dataset: str) -> DataManager:
+    return DataManager(MODEL, dataset, vector_dir=str(VECTOR_DIR), dataset_dir=str(DATASET_DIR))
+
+
 def run_pipeline() -> DataManager:
-    """Load source, run attack, save poisoned data, return poisoned DataManager."""
+    """Load source, optionally load victim (transfer mode), run attack, save, return result."""
+    # Step 1: Load source
     print("=" * 60)
     print("  STEP 1: Load source data")
     print("=" * 60)
-    source = DataManager(MODEL, DATASET, vector_dir=str(VECTOR_DIR), dataset_dir=str(DATASET_DIR))
+    source = _make_dm(SRC_DATASET)
     source.load_all()
     print(source.summarize())
 
+    # Load victim if transfer mode
+    if MODE == "transfer":
+        print()
+        print("=" * 60)
+        print("  STEP 1b: Load victim data (transfer mode)")
+        print("=" * 60)
+        victim = _make_dm(VICTIM_DATASET)
+        victim.load_all()
+        print(victim.summarize())
+    else:
+        victim = None
+
+    # Step 2: Run attack pipeline
     print()
     print("=" * 60)
     print("  STEP 2: Run attack pipeline")
     print("=" * 60)
     pipeline = BlackHolePipeline(
         source,
+        victim=victim,
         preprocess_mode=PREPROCESS_MODE,
         cluster_method=CLUSTER_METHOD,
         n_clusters=N_CLUSTERS,
         num_copies=NUM_COPIES,
         epsilon=EPSILON,
         seed=SEED,
+        index_type=INDEX_TYPE,
+        **INDEX_KWARGS,
     )
     poisoned = pipeline.run()
 
+    # Step 3: Save
     print()
     print("=" * 60)
     print("  STEP 3: Save poisoned data")
@@ -87,11 +118,13 @@ def run_pipeline() -> DataManager:
 
 def run_evaluation():
     """Load saved poisoned index and evaluate."""
+    eval_dataset = VICTIM_DATASET if MODE == "transfer" else SRC_DATASET
+
     print()
     print("=" * 60)
     print("  STEP 4: Load poisoned index for evaluation")
     print("=" * 60)
-    dm = DataManager(MODEL, DATASET, vector_dir=str(OUTPUT_DIR), dataset_dir=str(DATASET_DIR))
+    dm = DataManager(MODEL, eval_dataset, vector_dir=str(OUTPUT_DIR), dataset_dir=str(DATASET_DIR))
     dm.load_corpus()
     dm.load_queries()
     dm.load_index()
@@ -108,10 +141,13 @@ def run_evaluation():
 
 def save_results(metrics) -> None:
     """Persist evaluation metrics to JSON."""
+    eval_dataset = VICTIM_DATASET if MODE == "transfer" else SRC_DATASET
     payload = {
         "config": {
             "model": MODEL,
-            "dataset": DATASET,
+            "mode": MODE,
+            "src_dataset": SRC_DATASET,
+            "victim_dataset": eval_dataset,
             "preprocess_mode": PREPROCESS_MODE,
             "cluster_method": CLUSTER_METHOD,
             "n_clusters": N_CLUSTERS,
@@ -119,6 +155,7 @@ def save_results(metrics) -> None:
             "num_copies": NUM_COPIES,
             "epsilon": EPSILON,
             "seed": SEED,
+            "index_type": INDEX_TYPE,
         },
         "metrics": {
             f"MO@{EVAL_K}": metrics.mo_at_k,
@@ -137,15 +174,19 @@ def save_results(metrics) -> None:
 
 def print_summary(metrics) -> None:
     """Print final evaluation summary."""
+    eval_dataset = VICTIM_DATASET if MODE == "transfer" else SRC_DATASET
     print()
     print("=" * 60)
     print("  FINAL RESULTS")
     print("=" * 60)
     print(f"  Model:      {MODEL}")
-    print(f"  Dataset:    {DATASET}")
+    print(f"  Mode:       {MODE}")
+    print(f"  Src dataset:   {SRC_DATASET}")
+    print(f"  Victim dataset: {eval_dataset}")
     print(f"  Clusters:   {N_CLUSTERS}")
     print(f"  Copies:     {NUM_COPIES}")
     print(f"  Epsilon:    {EPSILON}")
+    print(f"  Index:      {INDEX_TYPE}")
     print(f"  Seed:       {SEED}")
     print(f"  ———————————————————————————")
     print(f"  MO@{EVAL_K}:    {metrics.mo_at_k:.4f} ± {metrics.mo_at_k_std:.4f}")
