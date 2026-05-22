@@ -8,10 +8,12 @@ Usage:
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shutil
 import sys
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
@@ -25,19 +27,19 @@ from evaluation.attack_evaluation import evaluate
 # ═══════════════════════════════════════════════════════════════════════════════
 
 MODEL = "contriever"
-SRC_DATASET = "nq"
+SRC_DATASET = "hotpotqa"
 
 # Attack mode:
 #   "default"  — train and attack the same dataset (victim = src)
 #   "transfer" — train on src, inject into a different dataset
-MODE = "default"
-VICTIM_DATASET = "hotpotqa"  # only used when MODE == "transfer"
+MODE = "transfer"
+VICTIM_DATASET = "nq"  # only used when MODE == "transfer"
 
-PREPROCESS_MODE = "default"
+PREPROCESS_MODE = "query_trans" # "default | query_trans"
 
-CLUSTER_METHOD = "minibatch_kmeans"  # "kmeans" | "minibatch_kmeans"
-N_CLUSTERS = 3000
-BATCH_SIZE = 4096
+CLUSTER_METHOD = "faiss_gpu"  # "kmeans" | "minibatch_kmeans | adaptive | faiss_gpu"
+N_CLUSTERS = 5000
+BATCH_SIZE = 30000
 
 NUM_COPIES = 10
 EPSILON = 0.001
@@ -46,6 +48,7 @@ SEED = 42
 INDEX_TYPE = "FlatIP"  # "FlatIP" | "IVF" | "HNSW"
 INDEX_KWARGS: dict = {}  # e.g. {"nlist": 4096} for IVF, {"hnsw_M": 32} for HNSW
 
+SAMPLE_QUERIES: int | None = 3000  # None = all; set to an integer to subsample
 EVAL_K = 10
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -56,7 +59,7 @@ ROOT = Path(__file__).resolve().parent / "data"
 VECTOR_DIR = ROOT / "vector"
 DATASET_DIR = ROOT / "datasets"
 OUTPUT_DIR = ROOT / "poisoned"
-RESULT_FILE = ROOT / "results.json"
+RESULT_DIR = ROOT / "result"
 
 
 def _make_dm(dataset: str) -> DataManager:
@@ -96,6 +99,7 @@ def run_pipeline() -> DataManager:
         preprocess_mode=PREPROCESS_MODE,
         cluster_method=CLUSTER_METHOD,
         n_clusters=N_CLUSTERS,
+        batch_size=BATCH_SIZE,
         num_copies=NUM_COPIES,
         epsilon=EPSILON,
         seed=SEED,
@@ -134,7 +138,7 @@ def run_evaluation():
     print("=" * 60)
     print("  STEP 5: Evaluate attack effectiveness")
     print("=" * 60)
-    metrics = evaluate(dm, k=EVAL_K)
+    metrics = evaluate(dm, k=EVAL_K, sample=SAMPLE_QUERIES)
 
     return metrics
 
@@ -156,6 +160,7 @@ def save_results(metrics) -> None:
             "epsilon": EPSILON,
             "seed": SEED,
             "index_type": INDEX_TYPE,
+            "sample_queries": SAMPLE_QUERIES,
         },
         "metrics": {
             f"MO@{EVAL_K}": metrics.mo_at_k,
@@ -167,9 +172,13 @@ def save_results(metrics) -> None:
             "num_queries": metrics.num_queries,
         },
     }
-    with open(RESULT_FILE, "w") as f:
+    RESULT_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{timestamp}_{MODEL}_{eval_dataset}.json"
+    result_path = RESULT_DIR / filename
+    with open(result_path, "w") as f:
         json.dump(payload, f, indent=2)
-    print(f"\nResults saved to: {RESULT_FILE}")
+    print(f"\nResults saved to: {result_path}")
 
 
 def print_summary(metrics) -> None:
@@ -195,7 +204,43 @@ def print_summary(metrics) -> None:
     print("=" * 60)
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Black-hole attack pipeline")
+    parser.add_argument("--model", default=MODEL)
+    parser.add_argument("--src", "--src-dataset", dest="src_dataset", default=SRC_DATASET)
+    parser.add_argument("--mode", default=MODE, choices=["default", "transfer"])
+    parser.add_argument("--victim", "--victim-dataset", dest="victim_dataset", default=VICTIM_DATASET)
+    parser.add_argument("--preprocess", dest="preprocess_mode", default=PREPROCESS_MODE)
+    parser.add_argument("--cluster", dest="cluster_method", default=CLUSTER_METHOD)
+    parser.add_argument("--n-clusters", type=int, default=N_CLUSTERS)
+    parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
+    parser.add_argument("--num-copies", type=int, default=NUM_COPIES)
+    parser.add_argument("--epsilon", type=float, default=EPSILON)
+    parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument("--index-type", default=INDEX_TYPE)
+    parser.add_argument("--sample-queries", type=int, default=SAMPLE_QUERIES,
+                        help="Number of queries to sample for evaluation (default: all)")
+    parser.add_argument("--eval-k", type=int, default=EVAL_K)
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
+    args = parse_args()
+    MODEL = args.model
+    SRC_DATASET = args.src_dataset
+    MODE = args.mode
+    VICTIM_DATASET = args.victim_dataset
+    PREPROCESS_MODE = args.preprocess_mode
+    CLUSTER_METHOD = args.cluster_method
+    N_CLUSTERS = args.n_clusters
+    BATCH_SIZE = args.batch_size
+    NUM_COPIES = args.num_copies
+    EPSILON = args.epsilon
+    SEED = args.seed
+    INDEX_TYPE = args.index_type
+    SAMPLE_QUERIES = args.sample_queries
+    EVAL_K = args.eval_k
+
     _ = run_pipeline()
     eval_metrics = run_evaluation()
     save_results(eval_metrics)

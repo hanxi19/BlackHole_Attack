@@ -42,6 +42,7 @@ class BlackHolePipeline:
         preprocess_mode: str = "default",
         cluster_method: str = "kmeans",
         n_clusters: int = 100,
+        batch_size: int = 4096,
         num_copies: int = 10,
         epsilon: float = 0.01,
         seed: int = 42,
@@ -53,6 +54,7 @@ class BlackHolePipeline:
         self.preprocess_mode = preprocess_mode
         self.cluster_method = cluster_method
         self.n_clusters = n_clusters
+        self.batch_size = batch_size
         self.num_copies = num_copies
         self.epsilon = epsilon
         self.seed = seed
@@ -77,8 +79,12 @@ class BlackHolePipeline:
 
     def run(self) -> DataManager:
         """Execute the full attack pipeline and return the poisoned DataManager."""
-        if self.source.corpus_vecs is None or self.source.corpus_texts is None:
-            raise RuntimeError("Source DataManager has no corpus loaded")
+        if self.preprocess_mode == "query_trans":
+            if self.source.query_vecs is None:
+                raise RuntimeError("Source DataManager has no query vectors loaded (required for query_trans mode)")
+        else:
+            if self.source.corpus_vecs is None or self.source.corpus_texts is None:
+                raise RuntimeError("Source DataManager has no corpus loaded")
 
         victim = self._victim_dm
         if victim.corpus_vecs is None or victim.corpus_texts is None:
@@ -97,7 +103,7 @@ class BlackHolePipeline:
         # Step 1: Preprocess (on source)
         print("[1/4] Preprocess (on source) ...")
         self.preprocessed_vecs = apply_preprocess(
-            self.source.corpus_vecs, mode=self.preprocess_mode
+            self.source, mode=self.preprocess_mode
         )
         print(f"  vectors: {self.preprocessed_vecs.shape}")
         print()
@@ -108,6 +114,7 @@ class BlackHolePipeline:
             self.preprocessed_vecs,
             method=self.cluster_method,
             n_clusters=self.n_clusters,
+            batch_size=self.batch_size,
         )
         print(f"  labels: {self.labels.shape}")
         print(f"  centers: {self.cluster_centers.shape}")

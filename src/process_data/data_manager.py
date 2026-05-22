@@ -386,11 +386,13 @@ class DataManager:
     def search(self, query_vecs: Optional[np.ndarray] = None,
                query_ids: Optional[Sequence[str]] = None,
                k: int = 10,
+               sample: Optional[int] = None,
                nprobe: Optional[int] = None,
                ef_search: Optional[int] = None) -> SearchResult:
         """Search corpus by query vectors or query _ids. Returns top-k results.
 
         nprobe/ef_search override index defaults for this search only (not persisted).
+        sample: if set, randomly sample this many queries (default None = all).
         """
         if self.ann_index is None or self._corpus_dirty:
             raise RuntimeError("ANN index is stale or not built. Call build_index() first.")
@@ -408,6 +410,11 @@ class DataManager:
                 idx_map = self._query_id_map()
                 indices = [idx_map[qid] for qid in query_ids]
                 query_vecs = self.query_vecs[indices]
+
+        if sample is not None and sample < query_vecs.shape[0]:
+            rng = np.random.default_rng(42)
+            idx = rng.choice(query_vecs.shape[0], size=sample, replace=False)
+            query_vecs = query_vecs[idx]
 
         q = query_vecs.copy()
         faiss.normalize_L2(q)

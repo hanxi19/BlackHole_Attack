@@ -85,16 +85,18 @@ def _compute_metrics(search_indices: np.ndarray, num_original: int, k: int) -> E
     )
 
 
-def evaluate(poisoned_dm: DataManager, k: int = 10) -> EvalMetrics:
+def evaluate(poisoned_dm: DataManager, k: int = 10,
+             sample: Optional[int] = None) -> EvalMetrics:
     """
     Evaluate attack effectiveness on a poisoned DataManager.
 
     The DataManager must have queries and a built ANN index loaded.
-    Searches all queries against the poisoned index and computes MO@K, ASR, FPR.
+    Searches queries against the poisoned index and computes MO@K, ASR, FPR.
 
     Args:
         poisoned_dm: DataManager with poisoned corpus, queries, and built index
         k: number of top results to consider (default 10)
+        sample: if set, randomly sample this many queries (default None = all)
 
     Returns:
         EvalMetrics with mo_at_k, asr, fpr_mean, and per-query breakdowns
@@ -110,9 +112,11 @@ def evaluate(poisoned_dm: DataManager, k: int = 10) -> EvalMetrics:
     print(f"Original documents: {num_original}")
     print(f"Adversarial documents: {_count_adversarial(poisoned_dm)}")
     print(f"Queries: {poisoned_dm.query_vecs.shape[0]}")
+    if sample is not None:
+        print(f"Sampled queries: {sample}")
     print()
 
-    # Search all queries
-    result = poisoned_dm.search(k=k)
+    # Search queries
+    result = poisoned_dm.search(k=k, sample=sample)
 
     return _compute_metrics(result.indices, num_original, k)
