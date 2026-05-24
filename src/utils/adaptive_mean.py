@@ -83,6 +83,24 @@ def _remove_empty(vecs: np.ndarray, labels: np.ndarray,
     return labels, centers
 
 
+def _remove_small(vecs: np.ndarray, labels: np.ndarray,
+                  centers: np.ndarray, threshold: int = 50
+                  ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Remove clusters with <= threshold points and their points, then remap labels."""
+    old_k = centers.shape[0]
+    counts = np.bincount(labels, minlength=old_k)
+    keep = counts > threshold
+    if keep.all():
+        return vecs, labels, centers
+
+    centers = centers[keep]
+    remap = np.full(old_k, -1, dtype=np.int64)
+    remap[keep] = np.arange(keep.sum())
+    labels = remap[labels]
+    keep_pts = labels >= 0
+    return vecs[keep_pts], labels[keep_pts], centers
+
+
 def _cpu_kmeans(vecs: np.ndarray, k: int, *,
                 niter: int = 25,
                 seed: int = 42,
@@ -163,7 +181,7 @@ def adaptive_clustering(
         counts = np.bincount(labels, minlength=centers.shape[0])
         oversized = np.where(counts > max_size)[0]
 
-        if len(oversized) == 0 or split_round >= 1:
+        if len(oversized) == 0 or split_round >= 10:
             break
 
         split_round += 1
@@ -186,19 +204,19 @@ def adaptive_clustering(
             if verbose:
                 print(f"    splitting cluster {cid}: {sub_n:,} pts → k={k_sub}")
 
-            # sub_labels, sub_centers = _cpu_kmeans(
-            #     sub_vecs, k_sub,
-            #     niter=niter, seed=random_state + cid,
-            #     verbose=False,
-            # )
-
-            sub_labels, sub_centers = cluster_constrained(
-                sub_vecs, n_clusters=k_sub,
-                size_min=min_size,
-                size_max=max_size,
-                random_state=random_state + cid,
+            sub_labels, sub_centers = _cpu_kmeans(
+                sub_vecs, k_sub,
+                niter=niter, seed=random_state + cid,
                 verbose=False,
             )
+
+            # sub_labels, sub_centers = cluster_constrained(
+            #     sub_vecs, n_clusters=k_sub,
+            #     size_min=min_size,
+            #     size_max=max_size,
+            #     random_state=random_state + cid,
+            #     verbose=False,
+            # )
             # sub_labels, sub_centers = _gpu_kmeans(
             #     sub_vecs, k_sub,
             #     gpu_id=gpu_id, niter=niter, seed=random_state + cid,
@@ -233,7 +251,7 @@ def adaptive_clustering(
             log_cluster_stats(labels, centers,
                               f"Phase 2 round {split_round} done")
 
-    labels, centers = _remove_empty(vecs, labels, centers)
+    vecs, labels, centers = _remove_small(vecs, labels, centers, threshold=50)
 
     # ── Phase 3: Merge small clusters ────────────────────────────────────
 

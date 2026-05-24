@@ -312,14 +312,31 @@ class DataManager:
 
     # ── ANN index ─────────────────────────────────────────────────────────
 
-    def build_index(self, index_type: Literal["FlatIP", "IVF", "HNSW"] = "FlatIP",
-                    nlist: int = 4096, hnsw_M: int = 32,
-                    nprobe: int = 64, ef_search: int = 128) -> DataManager:
+    def build_index(
+        self,
+        index_type: Literal["FlatIP", "IVF", "HNSW", "IVFPQ"] = "FlatIP",
+        nlist: int | None = None,
+        nprobe: int | None = None,
+        hnsw_M: int = 64,
+        hnsw_ef_construction: int = 200,
+        ef_search: int = 256,
+        ivfpq_m: int | None = None,
+        ivfpq_nbits: int = 8,
+        ivfpq_refine: bool = True,
+        ivfpq_refine_k_factor: int = 4,
+    ) -> DataManager:
         """Build/replace the FAISS index from current corpus vectors.
 
-        ANN tuning parameters:
-          nprobe:  clusters searched in IVF (higher = more accurate, slower). Default 64.
-          ef_search: search-time beam width for HNSW (higher = more accurate, slower). Default 128.
+        ANN tuning parameters (when None, auto-computed from corpus size):
+          nlist:   IVF/IVFPQ cluster count (IVF: 4*sqrt(n), IVFPQ: sqrt(n)).
+          nprobe:  IVF/IVFPQ clusters searched at query time (IVF: nlist/4, IVFPQ: nlist/3).
+          hnsw_M:            HNSW graph degree (default 64).
+          hnsw_ef_construction: HNSW build-time beam width (default 200).
+          ef_search:         HNSW query-time beam width (default 256).
+          ivfpq_m:           IVFPQ sub-quantizers (None = auto: dim//8).
+          ivfpq_nbits:       IVFPQ bits per sub-quantizer (default 8).
+          ivfpq_refine:      Wrap IVFPQ with IndexRefineFlat for exact-distance re-ranking.
+          ivfpq_refine_k_factor: Multiplier for candidate count from base IVFPQ index.
         """
         if self.corpus_vecs is None:
             raise RuntimeError("Corpus vectors not loaded")
@@ -327,17 +344,52 @@ class DataManager:
         vecs = self.corpus_vecs.copy()
         faiss.normalize_L2(vecs)
         dim = vecs.shape[1]
+        n = vecs.shape[0]
 
         if index_type == "FlatIP":
             self.ann_index = faiss.IndexFlatIP(dim)
         elif index_type == "IVF":
+            if nlist is None:
+                nlist = min(4096, max(64, int(4 * np.sqrt(n))))
+            if nprobe is None:
+                nprobe = min(128, max(16, nlist // 4))
             quantizer = faiss.IndexFlatIP(dim)
             self.ann_index = faiss.IndexIVFFlat(quantizer, dim, nlist)
             self.ann_index.train(vecs)
             faiss.extract_index_ivf(self.ann_index).nprobe = nprobe
+            print(f"  IVF: nlist={nlist}, nprobe={nprobe}")
         elif index_type == "HNSW":
             self.ann_index = faiss.IndexHNSWFlat(dim, hnsw_M)
+            self.ann_index.hnsw.efConstruction = hnsw_ef_construction
             self.ann_index.hnsw.efSearch = ef_search
+        elif index_type == "IVFPQ":
+            if nlist is None:
+                nlist = min(4096, max(32, int(np.sqrt(n))))
+            if nprobe is None:
+                nprobe = min(128, max(16, nlist // 3))
+            # Adjust m so that dim is divisible by m (FAISS requirement)
+            if ivfpq_m is None:
+                # Auto: sub-vectors of 8 dimensions each (standard heuristic)
+                m_adj = max(8, dim // 8)
+                while m_adj > 1 and dim % m_adj != 0:
+                    m_adj -= 1
+            else:
+                m_adj = int(ivfpq_m)
+                while m_adj > 1 and dim % m_adj != 0:
+                    m_adj -= 1
+            quantizer = faiss.IndexFlatIP(dim)
+            self.ann_index = faiss.IndexIVFPQ(quantizer, dim, nlist, m_adj, ivfpq_nbits)
+            self.ann_index.train(vecs)
+            faiss.extract_index_ivf(self.ann_index).nprobe = nprobe
+            print(f"  IVFPQ: nlist={nlist}, nprobe={nprobe}, m={m_adj}, nbits={ivfpq_nbits}")
+            if ivfpq_refine:
+                self.ann_index = faiss.IndexRefineFlat(self.ann_index)
+                self.ann_index.k_factor = ivfpq_refine_k_factor
+                self.ann_index.add(vecs)
+                print(f"  IVFPQ refine: k_factor={ivfpq_refine_k_factor}")
+                self._index_type = index_type
+                self._corpus_dirty = False
+                return self
         else:
             raise ValueError(f"Unknown index type: {index_type}")
 
@@ -364,21 +416,31 @@ class DataManager:
         self.ann_index = faiss.read_index(path)
         self._corpus_dirty = False
 
-        # Infer index type from the loaded index
-        if isinstance(self.ann_index, faiss.IndexFlatIP):
+        # Infer index type from the loaded index (unwrap IndexRefineFlat if present)
+        raw = self._unwrap_index()
+        if isinstance(raw, faiss.IndexFlatIP):
             self._index_type = "FlatIP"
-        elif isinstance(self.ann_index, faiss.IndexIVFFlat):
+        elif isinstance(raw, faiss.IndexIVFFlat):
             self._index_type = "IVF"
-        elif isinstance(self.ann_index, faiss.IndexHNSWFlat):
+        elif isinstance(raw, faiss.IndexHNSWFlat):
             self._index_type = "HNSW"
+        elif isinstance(raw, faiss.IndexIVFPQ):
+            self._index_type = "IVFPQ"
         else:
-            self._index_type = type(self.ann_index).__name__
+            self._index_type = type(raw).__name__
 
         if self.ann_index.ntotal != self.corpus_vecs.shape[0]:
             print(f"  Warning: index size ({self.ann_index.ntotal}) != corpus size ({self.corpus_vecs.shape[0]})")
 
         print(f"  Loaded {self._index_type} index ({self.ann_index.ntotal} vectors) from {path}")
         return self
+
+    def _unwrap_index(self):
+        """Return the innermost IVF/HNSW index, unwrapping IndexRefineFlat if present."""
+        idx = self.ann_index
+        while hasattr(idx, "base_index"):
+            idx = idx.base_index
+        return idx
 
     def has_index(self) -> bool:
         return self.ann_index is not None and not self._corpus_dirty
@@ -398,8 +460,8 @@ class DataManager:
             raise RuntimeError("ANN index is stale or not built. Call build_index() first.")
 
         # Override search-time ANN parameters per-query
-        if nprobe is not None and self._index_type == "IVF":
-            faiss.extract_index_ivf(self.ann_index).nprobe = nprobe
+        if nprobe is not None and self._index_type in ("IVF", "IVFPQ"):
+            faiss.extract_index_ivf(self._unwrap_index()).nprobe = nprobe
         if ef_search is not None and self._index_type == "HNSW":
             self.ann_index.hnsw.efSearch = ef_search
 
@@ -486,7 +548,7 @@ class DataManager:
 def load_manager(model: str, dataset: str,
                  vector_dir: str, dataset_dir: str,
                  config_path: Optional[str] = None,
-                 index_type: Literal["FlatIP", "IVF", "HNSW"] = "FlatIP",
+                 index_type: Literal["FlatIP", "IVF", "HNSW", "IVFPQ"] = "FlatIP",
                  **index_kwargs) -> DataManager:
     """Convenience: load everything and build index in one call."""
     dm = DataManager(
@@ -509,7 +571,7 @@ if __name__ == "__main__":
     parser.add_argument("--vector-dir", type=str, required=True)
     parser.add_argument("--dataset-dir", type=str, required=True)
     parser.add_argument("--index-type", type=str, default="FlatIP",
-                        choices=["FlatIP", "IVF", "HNSW"])
+                        choices=["FlatIP", "IVF", "HNSW", "IVFPQ"])
     parser.add_argument("--save-to", type=str, default=None,
                         help="Directory to save current state")
     args = parser.parse_args()

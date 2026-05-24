@@ -1,5 +1,6 @@
 # Data (downloaded datasets, vectors, indexes, models)
 data/
+experiments/
 
 # Python cache
 __pycache__/
@@ -11,3 +12,6 @@ __pycache__/
 
 # Conda/pip
 *.egg-info/
+
+# other
+.claude

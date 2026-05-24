@@ -48,7 +48,7 @@ def cluster_minibatch_kmeans(vecs: np.ndarray, n_clusters: int, *,
 
 def cluster_faiss_gpu(vecs: np.ndarray, n_clusters: int, *,
                       random_state: int = 42,
-                      gpu_id: int = 1,
+                      gpu_id: int = 0,
                       niter: int = 25,
                       use_float16: bool = False,
                       **kwargs) -> Tuple[np.ndarray, np.ndarray]:

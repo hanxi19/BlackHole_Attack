@@ -27,11 +27,13 @@ def download_dataset(huggingface_id: str, output_dir: str):
             print(f"  [{subset}] already exists, skip")
             continue
 
-        print(f"  Loading {huggingface_id}/{subset} ...")
-        ds = load_dataset(huggingface_id, subset, split=subset)
-
-        ds.to_parquet(out_path)
-        print(f"  [{subset}] {len(ds)} rows -> {out_path}")
+        try:
+            print(f"  Loading {huggingface_id}/{subset} ...")
+            ds = load_dataset(huggingface_id, subset, split=subset)
+            ds.to_parquet(out_path)
+            print(f"  [{subset}] {len(ds)} rows -> {out_path}")
+        except Exception as e:
+            print(f"  [{subset}] failed, skip: {e}")
 
     # qrels is a separate repo (e.g. BeIR/nq-qrels) with a "test" split
     qrels_path = os.path.join(out_dir, "qrels.parquet")
@@ -40,10 +42,13 @@ def download_dataset(huggingface_id: str, output_dir: str):
         return
 
     qrels_repo = f"{huggingface_id}-qrels"
-    print(f"  Loading {qrels_repo} ...")
-    ds = load_dataset(qrels_repo, split="test")
-    ds.to_parquet(qrels_path)
-    print(f"  [qrels] {len(ds)} rows -> {qrels_path}")
+    try:
+        print(f"  Loading {qrels_repo} ...")
+        ds = load_dataset(qrels_repo, split="test")
+        ds.to_parquet(qrels_path)
+        print(f"  [qrels] {len(ds)} rows -> {qrels_path}")
+    except Exception as e:
+        print(f"  [qrels] failed, skip: {e}")
 
 
 def main():

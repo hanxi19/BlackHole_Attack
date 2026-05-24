@@ -82,6 +82,8 @@ class BlackHolePipeline:
         if self.preprocess_mode == "query_trans":
             if self.source.query_vecs is None:
                 raise RuntimeError("Source DataManager has no query vectors loaded (required for query_trans mode)")
+        elif self.preprocess_mode == "multi_query_transfer":
+            pass  # queries loaded from all datasets; no source validation needed
         else:
             if self.source.corpus_vecs is None or self.source.corpus_texts is None:
                 raise RuntimeError("Source DataManager has no corpus loaded")
@@ -102,8 +104,9 @@ class BlackHolePipeline:
 
         # Step 1: Preprocess (on source)
         print("[1/4] Preprocess (on source) ...")
+        victim_dataset = self.victim.dataset if self.victim is not None else self.source.dataset
         self.preprocessed_vecs = apply_preprocess(
-            self.source, mode=self.preprocess_mode
+            self.source, mode=self.preprocess_mode, victim=victim_dataset
         )
         print(f"  vectors: {self.preprocessed_vecs.shape}")
         print()

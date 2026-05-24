@@ -85,38 +85,59 @@ def _compute_metrics(search_indices: np.ndarray, num_original: int, k: int) -> E
     )
 
 
-def evaluate(poisoned_dm: DataManager, k: int = 10,
-             sample: Optional[int] = None) -> EvalMetrics:
-    """
-    Evaluate attack effectiveness on a poisoned DataManager.
+SUPPORTED_INDEX_TYPES = ("FlatIP", "IVF", "HNSW", "IVFPQ")
 
-    The DataManager must have queries and a built ANN index loaded.
-    Searches queries against the poisoned index and computes MO@K, ASR, FPR.
+
+def evaluate(poisoned_dm: DataManager, k: int = 10,
+             sample: Optional[int] = None,
+             index_types: Optional[list[str]] = None) -> dict[str, EvalMetrics]:
+    """
+    Evaluate attack effectiveness on a poisoned DataManager for one or more ANN index types.
+
+    For each index_type, builds the index if the DataManager doesn't already have it,
+    searches queries against the poisoned index, and computes MO@K, ASR, FPR.
 
     Args:
-        poisoned_dm: DataManager with poisoned corpus, queries, and built index
+        poisoned_dm: DataManager with poisoned corpus and queries loaded
         k: number of top results to consider (default 10)
         sample: if set, randomly sample this many queries (default None = all)
+        index_types: list of index types to evaluate, e.g. ["FlatIP", "IVF", "HNSW"].
+                     If None, uses the current index type (must have a built index).
 
     Returns:
-        EvalMetrics with mo_at_k, asr, fpr_mean, and per-query breakdowns
+        dict mapping index_type -> EvalMetrics
     """
-    if not poisoned_dm.has_index():
-        raise RuntimeError("DataManager has no built index; call build_index() or load_index() first")
     if poisoned_dm.query_vecs is None:
         raise RuntimeError("DataManager has no query vectors loaded")
     if poisoned_dm.corpus_texts is None:
         raise RuntimeError("DataManager has no corpus texts loaded")
 
+    if index_types is None:
+        if not poisoned_dm.has_index():
+            raise RuntimeError("DataManager has no built index; call build_index() or pass index_types")
+        index_types = [poisoned_dm._index_type]
+
     num_original = len(poisoned_dm.corpus_texts) - _count_adversarial(poisoned_dm)
     print(f"Original documents: {num_original}")
     print(f"Adversarial documents: {_count_adversarial(poisoned_dm)}")
     print(f"Queries: {poisoned_dm.query_vecs.shape[0]}")
+    print(f"Index types to evaluate: {index_types}")
     if sample is not None:
         print(f"Sampled queries: {sample}")
     print()
 
-    # Search queries
-    result = poisoned_dm.search(k=k, sample=sample)
+    results: dict[str, EvalMetrics] = {}
 
-    return _compute_metrics(result.indices, num_original, k)
+    for idx_type in index_types:
+        print(f"--- Evaluating: {idx_type} ---")
+        if not poisoned_dm.has_index() or poisoned_dm._index_type != idx_type:
+            print(f"  Building {idx_type} index ...")
+            poisoned_dm.build_index(idx_type)
+
+        result = poisoned_dm.search(k=k, sample=sample)
+        metrics = _compute_metrics(result.indices, num_original, k)
+        results[idx_type] = metrics
+        print(f"  MO@{k}: {metrics.mo_at_k:.4f}  ASR: {metrics.asr:.4f}  FPR: {metrics.fpr_mean:.2f}")
+        print()
+
+    return results
