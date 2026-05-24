@@ -13,5 +13,8 @@ __pycache__/
 # Conda/pip
 *.egg-info/
 
+# Optional vendor clones (see README)
+third_party/
+
 # other
 .claude
